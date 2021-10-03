@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -30,13 +29,18 @@ type user struct {
 	Zipcode   string `json:"zipcode"`
 }
 
+type itemDdb struct {
+	Id          string  `json:"id"`
+	Owner       string  `json:"owner"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Price       float64 `json:"price"`
+	Quantity    int     `json:"quantity"`
+}
+
 type item struct {
-	Id          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Price       float64  `json:"price"`
-	Quantity    int      `json:"quantity"`
-	Reviews     []review `json:"reviews"`
+	Item    itemDdb  `json:"item"`
+	Reviews []review `json:"reviews"`
 }
 
 type review struct {
@@ -183,10 +187,10 @@ func storeUser(newUser user) error {
 }
 
 func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	var newItem item
+	var newItem itemDdb
 
 	err := json.Unmarshal([]byte(req.Body), &newItem)
-	if err != nil || newItem.Name == "" || newItem.Description == "" {
+	if err != nil || newItem.Name == "" || newItem.Description == "" || newItem.Owner == "" {
 		result := errorResponse{
 			Message: "Invalid request",
 			Detail:  "Request body is invalid. Please see the documentation.",
@@ -197,46 +201,85 @@ func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 	//assign an item id (uid)
 	newItem.Id = uuid.New().String()
 
-	//TODO: validate item (quantitiy, price name, description)
+	//TODO: validate item (owener, quantitiy, price name, description)
+	//TODO: Owner should be get from auth token. Only the owner can create items
 
-	//TODO: save item to db
+	err = storeItem(newItem)
+	if err != nil {
+		result := errorResponse{
+			Message: "Unable to store new item",
+			Detail:  err.Error(),
+		}
+		return apiResponse(http.StatusInternalServerError, result)
+	}
 
 	return apiResponse(http.StatusOK, newItem)
 }
 
-func getItems(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+func storeItem(newItem itemDdb) error {
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
 
-	newItem := item{
-		Id:          uuid.NewString(),
-		Name:        "New item",
-		Description: "Good stuff",
-		Price:       1.99,
-		Quantity:    23,
-		Reviews: []review{
-			{
-				Id:         uuid.NewString(),
-				ReviewerId: "rtyildirim",
-				Review:     "Very good I am happy",
-				Rating:     5,
-				Time:       time.Now().Format("RFC1123"),
-			},
-			{
-				Id:         uuid.NewString(),
-				ReviewerId: "jschmuk",
-				Review:     "Very bad I am unhappy",
-				Rating:     5,
-				Time:       time.Now().Add(-64 * time.Hour).Format("RFC1123"),
-			},
-		},
+	svc := dynamodb.New(sess)
+
+	ni, err := dynamodbattribute.MarshalMap(newItem)
+	if err != nil {
+		return err
 	}
 
-	newItem.Id = uuid.New().String()
+	tableName := "itemTable"
 
-	//TODO: validate item (quantitiy, price name, description)
+	input := &dynamodb.PutItemInput{
+		Item:      ni,
+		TableName: aws.String(tableName),
+	}
 
-	//TODO: save item to db
+	_, err = svc.PutItem(input)
 
-	return apiResponse(http.StatusOK, newItem)
+	return err
+}
+
+func getItems(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	// Create DynamoDB client
+	svc := dynamodb.New(sess)
+
+	tableName := "itemTable"
+
+	scanInput := &dynamodb.ScanInput{
+		TableName: aws.String(tableName),
+	}
+
+	res, err := svc.Scan(scanInput)
+	if err != nil {
+		return apiResponse(http.StatusInternalServerError, errorResponse{
+			Message: "Unable to get items",
+			Detail:  err.Error(),
+		})
+	}
+
+	out := []item{}
+
+	var record itemDdb
+
+	for _, j := range res.Items {
+		err = dynamodbattribute.UnmarshalMap(j, &record)
+		if err == nil {
+			item := item{
+				Item:    record,
+				Reviews: []review{},
+			}
+			//TODO: add reviews
+			out = append(out, item)
+		}
+	}
+
+	return apiResponse(http.StatusOK, out)
 }
 
 func unhandledMethod(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {

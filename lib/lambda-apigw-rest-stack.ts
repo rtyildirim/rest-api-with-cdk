@@ -29,6 +29,13 @@ export class LambdaApigwRestStack extends cdk.Stack {
       pointInTimeRecovery: false,
     });
 
+    itemTable.addGlobalSecondaryIndex({
+      indexName: 'ownerIndex',
+      partitionKey: {name: 'owner', type: dynamodb.AttributeType.STRING},
+      sortKey: {name: 'id', type: dynamodb.AttributeType.STRING},
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     const reviewTable = new dynamodb.Table(this, "ReviewTable", {
       tableName: "reviewTable",
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
