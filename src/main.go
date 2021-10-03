@@ -1,13 +1,16 @@
 package main
 
 import (
-	//"aws-lambda-in-go-lang/pkg/handlers"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 
 	"github.com/google/uuid"
 
@@ -17,7 +20,7 @@ import (
 type user struct {
 	UserName  string `json:"userName"`
 	Email     string `json:"email"`
-	FirstName string `json:"firstlName"`
+	FirstName string `json:"firstName"`
 	LastName  string `json:"lastName"`
 	Password  string `json:"password"`
 	Address1  string `json:"address1"`
@@ -116,10 +119,42 @@ func createUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 	//TODO: Validate password for requirements
 
 	//TODO: save user to db
+	err = storeUser(newUser)
+	if err != nil {
+		result := errorResponse{
+			Message: "Unable to store new user",
+			Detail:  err.Error(),
+		}
+		return apiResponse(http.StatusInternalServerError, result)
+	}
 
 	newUser.Password = "**********"
 
 	return apiResponse(http.StatusOK, newUser)
+}
+
+func storeUser(newUser user) error {
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	svc := dynamodb.New(sess)
+
+	nu, err := dynamodbattribute.MarshalMap(newUser)
+	if err != nil {
+		return err
+	}
+
+	tableName := "userTable"
+
+	input := &dynamodb.PutItemInput{
+		Item:      nu,
+		TableName: aws.String(tableName),
+	}
+
+	_, err = svc.PutItem(input)
+
+	return err
 }
 
 func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
@@ -151,21 +186,21 @@ func getItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 		Name:        "New item",
 		Description: "Good stuff",
 		Price:       1.99,
-		Quantitiy:   23,
+		Quantity:    23,
 		Reviews: []review{
 			{
-				Id:       uuid.NewString(),
-				Reviewer: "rtyildirim",
-				Review:   "Very good I am happy",
-				Rating:   5,
-				Time:     time.Now().Format("RFC1123"),
+				Id:         uuid.NewString(),
+				ReviewerId: "rtyildirim",
+				Review:     "Very good I am happy",
+				Rating:     5,
+				Time:       time.Now().Format("RFC1123"),
 			},
 			{
-				Id:       uuid.NewString(),
-				Reviewer: "jschmuk",
-				Review:   "Very bad I am unhappy",
-				Rating:   5,
-				Time:     time.Now().Add(-64 * time.Hour).Format("RFC1123"),
+				Id:         uuid.NewString(),
+				ReviewerId: "jschmuk",
+				Review:     "Very bad I am unhappy",
+				Rating:     5,
+				Time:       time.Now().Add(-64 * time.Hour).Format("RFC1123"),
 			},
 		},
 	}
