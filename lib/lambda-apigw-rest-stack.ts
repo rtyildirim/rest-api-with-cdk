@@ -4,6 +4,7 @@ import * as lambda from '@aws-cdk/aws-lambda';
 import s3deploy = require('@aws-cdk/aws-s3-deployment');
 import { LambdaIntegration, MethodLoggingLevel, RestApi } from "@aws-cdk/aws-apigateway"
 import { PolicyStatement } from '@aws-cdk/aws-iam';
+import * as dynamodb from '@aws-cdk/aws-dynamodb';
 
 import path = require("path")
 
@@ -11,6 +12,45 @@ import path = require("path")
 export class LambdaApigwRestStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const userTable = new dynamodb.Table(this, "UserTable", {
+      tableName: "userTable",
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      partitionKey: { name: 'userName', type: dynamodb.AttributeType.STRING },
+      pointInTimeRecovery: false,
+    });
+
+    const itemTable = new dynamodb.Table(this, "ItemTable", {
+      tableName: "itemTable",
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      pointInTimeRecovery: false,
+    });
+
+    const reviewTable = new dynamodb.Table(this, "ReviewTable", {
+      tableName: "reviewTable",
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      pointInTimeRecovery: false,
+    });
+
+    reviewTable.addGlobalSecondaryIndex({
+      indexName: 'reviewerIdIndex',
+      partitionKey: {name: 'reviewerId', type: dynamodb.AttributeType.STRING},
+      sortKey: {name: 'itemId', type: dynamodb.AttributeType.STRING},
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    reviewTable.addGlobalSecondaryIndex({
+      indexName: 'itemIdIndex',
+      partitionKey: {name: 'itemId', type: dynamodb.AttributeType.STRING},
+      sortKey: {name: 'reviewerId', type: dynamodb.AttributeType.STRING},
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
 
     const lambdaFunction = new lambda.Function(this, "LambdaApiFunction", {
       runtime: lambda.Runtime.GO_1_X,
@@ -20,6 +60,12 @@ export class LambdaApigwRestStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
+    // grant the lambda role read/write permissions to our table
+    userTable.grantReadWriteData(lambdaFunction);
+    itemTable.grantReadWriteData(lambdaFunction);
+    reviewTable.grantReadWriteData(lambdaFunction);
+
+    //create new rest api on Api Gateway
     const restApi = new RestApi(this, "LambdaApiFunctionRestApi", {
       description: "Rest API Demo Using CDK",
       defaultCorsPreflightOptions: {
@@ -36,16 +82,25 @@ export class LambdaApigwRestStack extends cdk.Stack {
       },
     })
 
+    //Create paths and methods
     const users = restApi.root.addResource('users', {});
-
     const getUserMethod = users.addMethod("GET", new LambdaIntegration(lambdaFunction, {}), {
       apiKeyRequired: true,
     })
     const postUserMethod = users.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
+      apiKeyRequired: false,
+    })
+
+    const items = restApi.root.addResource('items', {});
+    const getItemsMethod = items.addMethod("GET", new LambdaIntegration(lambdaFunction, {}), {
       apiKeyRequired: true,
+    })
+    const postItemsMethod = items.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
+      apiKeyRequired: false,
     })
 
 
+    //create usage plan
     const plan = restApi.addUsagePlan('UsagePlan', {
       name: 'UsersUsagePlan',
       description: "Usage plan for rest api",
@@ -56,31 +111,13 @@ export class LambdaApigwRestStack extends cdk.Stack {
       }
     });
 
+    //create api key and add it to usage plan
     const key = restApi.addApiKey('ApiKey');
     plan.addApiKey(key);
 
-    // plan.addApiStage({
-    //   stage: restApi.deploymentStage,
-    //   require: true,
-    //   throttle: [
-    //     {
-    //       method: getUserMethod,
-    //       throttle: {
-    //         rateLimit: 10,
-    //         burstLimit: 2
-    //       }
-    //     },
-    //     {
-    //       method: postUserMethod,
-    //       throttle: {
-    //         rateLimit: 10,
-    //         burstLimit: 2
-    //       }
-    //     }
-    //   ]
-    // });
 
 
+    //allow lambda function to create log groups and write logs on CloudWatch
     const logPermission = new PolicyStatement();
     logPermission.addResources('arn:aws:logs:*:*:*');
     logPermission.addActions('logs:CreateLogGroup');
@@ -89,6 +126,9 @@ export class LambdaApigwRestStack extends cdk.Stack {
     lambdaFunction.addToRolePolicy(logPermission);
 
     new cdk.CfnOutput(this, 'apiUrl', { value: restApi.url });
+    new cdk.CfnOutput(this, 'userTable', { value: userTable.tableName });
+    new cdk.CfnOutput(this, 'itemTable', { value: itemTable.tableName });
+    new cdk.CfnOutput(this, 'reviewTable', { value: reviewTable.tableName });
 
   }
 }

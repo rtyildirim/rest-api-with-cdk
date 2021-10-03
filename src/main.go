@@ -3,20 +3,46 @@ package main
 import (
 	//"aws-lambda-in-go-lang/pkg/handlers"
 	"fmt"
-	"log"
 	"net/http"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 
+	"github.com/google/uuid"
+
 	"encoding/json"
 )
 
-type okResponse struct {
-	UserName string `json:"userName"`
-	Email    string `json:"emailName"`
-	Address  string `json:"address"`
-	Id       int    `json:"id"`
+type user struct {
+	UserName  string `json:"userName"`
+	Email     string `json:"email"`
+	FirstName string `json:"firstlName"`
+	LastName  string `json:"lastName"`
+	Password  string `json:"password"`
+	Address1  string `json:"address1"`
+	Address2  string `json:"address2"`
+	City      string `json:"city"`
+	State     string `json:"state"`
+	Zipcode   string `json:"zipcode"`
+}
+
+type item struct {
+	Id          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Price       float64  `json:"price"`
+	Quantity    int      `json:"quantity"`
+	Reviews     []review `json:"reviews"`
+}
+
+type review struct {
+	Id         string `json:"id"`
+	ItemId     string `json:"itemId"`
+	ReviewerId string `json:"reviewerId"`
+	Review     string `json:"review"`
+	Rating     int    `json:"rating"`
+	Time       string `json:"time"`
 }
 
 type errorResponse struct {
@@ -29,46 +55,131 @@ func main() {
 }
 
 func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	log.Println("reuqest path", req.Path)
-	log.Println("request body", req.Body)
-	log.Println("request query params", req.QueryStringParameters)
-
-	log.Println("req", req)
-
 	switch req.Path {
 	case "/users":
-		return UserHandler(req)
+		return userHandler(req)
+	case "/items":
+		return itemHandler(req)
 	default:
-		return UnhandledMethod(req)
+		return unhandledPath(req)
 	}
 }
 
-func UserHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	log.Println("reuqest path", req.HTTPMethod)
+func userHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	switch req.HTTPMethod {
 	case "GET":
-		log.Println("Processing GET")
-		return GetUser(req)
+		return getUser(req)
 	case "POST":
-		log.Println("Processing POST")
-		return UnhandledMethod(req)
+		return createUser(req)
 	default:
-		return UnhandledMethod(req)
+		return unhandledMethod(req)
 	}
 }
 
-func GetUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+func itemHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	switch req.HTTPMethod {
+	case "GET":
+		return getItem(req)
+	case "POST":
+		return createItem(req)
+	default:
+		return unhandledMethod(req)
+	}
+}
 
-	result := okResponse{
-		UserName: "Tolga Yildirim",
+func getUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	result := user{
+		UserName: "rtyildirim",
 		Email:    "blah@gmail.com",
-		Address:  "My Address",
-		Id:       1,
+		Address1: "My Address",
+		City:     "EC",
+		State:    "OK",
+		Zipcode:  "23456",
+		Password: "*********",
 	}
 	return apiResponse(http.StatusOK, result)
 }
 
-func UnhandledMethod(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+func createUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	var newUser user
+
+	err := json.Unmarshal([]byte(req.Body), &newUser)
+	if err != nil || newUser.Email == "" || newUser.UserName == "" || newUser.Password == "" {
+		result := errorResponse{
+			Message: "Invalid request",
+			Detail:  "Request body is invalid. Please see the documentation.",
+		}
+		return apiResponse(http.StatusBadRequest, result)
+	}
+
+	//TODO: validate email address, username, make sure they are not already in the db
+	//TODO: Validate password for requirements
+
+	//TODO: save user to db
+
+	newUser.Password = "**********"
+
+	return apiResponse(http.StatusOK, newUser)
+}
+
+func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	var newItem item
+
+	err := json.Unmarshal([]byte(req.Body), &newItem)
+	if err != nil || newItem.Name == "" || newItem.Description == "" {
+		result := errorResponse{
+			Message: "Invalid request",
+			Detail:  "Request body is invalid. Please see the documentation.",
+		}
+		return apiResponse(http.StatusBadRequest, result)
+	}
+
+	//assign an item id (uid)
+	newItem.Id = uuid.New().String()
+
+	//TODO: validate item (quantitiy, price name, description)
+
+	//TODO: save item to db
+
+	return apiResponse(http.StatusOK, newItem)
+}
+
+func getItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+
+	newItem := item{
+		Id:          uuid.NewString(),
+		Name:        "New item",
+		Description: "Good stuff",
+		Price:       1.99,
+		Quantitiy:   23,
+		Reviews: []review{
+			{
+				Id:       uuid.NewString(),
+				Reviewer: "rtyildirim",
+				Review:   "Very good I am happy",
+				Rating:   5,
+				Time:     time.Now().Format("RFC1123"),
+			},
+			{
+				Id:       uuid.NewString(),
+				Reviewer: "jschmuk",
+				Review:   "Very bad I am unhappy",
+				Rating:   5,
+				Time:     time.Now().Add(-64 * time.Hour).Format("RFC1123"),
+			},
+		},
+	}
+
+	newItem.Id = uuid.New().String()
+
+	//TODO: validate item (quantitiy, price name, description)
+
+	//TODO: save item to db
+
+	return apiResponse(http.StatusOK, newItem)
+}
+
+func unhandledMethod(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	result := errorResponse{
 		Message: fmt.Sprintf("%s method is not supported for %s path", req.HTTPMethod, req.Path),
 		Detail:  "Try again",
@@ -76,7 +187,7 @@ func UnhandledMethod(req events.APIGatewayProxyRequest) (*events.APIGatewayProxy
 	return apiResponse(http.StatusNotFound, result)
 }
 
-func UnhandledPath(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+func unhandledPath(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	result := errorResponse{
 		Message: fmt.Sprintf("Invalid path %s", req.Path),
 		Detail:  "Try valid paths",
