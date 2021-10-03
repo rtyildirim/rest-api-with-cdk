@@ -71,7 +71,7 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 func userHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	switch req.HTTPMethod {
 	case "GET":
-		return getUser(req)
+		return getUsers(req)
 	case "POST":
 		return createUser(req)
 	default:
@@ -82,7 +82,7 @@ func userHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResp
 func itemHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	switch req.HTTPMethod {
 	case "GET":
-		return getItem(req)
+		return getItems(req)
 	case "POST":
 		return createItem(req)
 	default:
@@ -90,17 +90,42 @@ func itemHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResp
 	}
 }
 
-func getUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	result := user{
-		UserName: "rtyildirim",
-		Email:    "blah@gmail.com",
-		Address1: "My Address",
-		City:     "EC",
-		State:    "OK",
-		Zipcode:  "23456",
-		Password: "*********",
+func getUsers(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	// Create DynamoDB client
+	svc := dynamodb.New(sess)
+
+	tableName := "userTable"
+
+	scanInput := &dynamodb.ScanInput{
+		TableName: aws.String(tableName),
 	}
-	return apiResponse(http.StatusOK, result)
+
+	res, err := svc.Scan(scanInput)
+	if err != nil {
+		return apiResponse(http.StatusInternalServerError, errorResponse{
+			Message: "Unable to get users",
+			Detail:  err.Error(),
+		})
+	}
+
+	out := []user{}
+
+	var record user
+
+	for _, j := range res.Items {
+		err = dynamodbattribute.UnmarshalMap(j, &record)
+		if err == nil {
+			record.Password = "****"
+			out = append(out, record)
+		}
+	}
+
+	return apiResponse(http.StatusOK, out)
 }
 
 func createUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
@@ -179,7 +204,7 @@ func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 	return apiResponse(http.StatusOK, newItem)
 }
 
-func getItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+func getItems(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 
 	newItem := item{
 		Id:          uuid.NewString(),
