@@ -149,6 +149,7 @@ export class LambdaApigwRestStack extends cdk.Stack {
     tokenKeyPermission.addActions('kms:Encrypt');
     tokenKeyPermission.addActions('kms:Sign');
     tokenKeyPermission.addActions('kms:Verify');
+    tokenKeyPermission.addActions('kms:GetPublicKey');
     lambdaFunction.addToRolePolicy(tokenKeyPermission);
 
     new cdk.CfnOutput(this, 'apiUrl', { value: restApi.url });

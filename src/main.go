@@ -65,7 +65,7 @@ type review struct {
 
 type errorResponse struct {
 	Message string `json:"message"`
-	Detail  string `json:"Detail"`
+	Detail  string `json:"detail"`
 }
 
 type loginResponse struct {
@@ -311,6 +311,16 @@ func storeUser(newUser userType) error {
 func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	var newItem itemDdb
 
+	auth, ok := req.Headers["Authorization"]
+
+	if !ok || auth == "" {
+		result := errorResponse{
+			Message: "Unauthorized",
+			Detail:  "No auth token in request",
+		}
+		return apiResponse(http.StatusUnauthorized, result)
+	}
+
 	err := json.Unmarshal([]byte(req.Body), &newItem)
 	if err != nil || newItem.Name == "" || newItem.Description == "" || newItem.Owner == "" {
 		result := errorResponse{
@@ -318,6 +328,26 @@ func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 			Detail:  "Request body is invalid. Please see the documentation.",
 		}
 		return apiResponse(http.StatusBadRequest, result)
+	}
+
+	token := strings.Replace(auth, "Bearer ", "", 1)
+
+	valid, err := validateToken(token, newItem.Owner)
+
+	if err != nil {
+		result := errorResponse{
+			Message: "Unauthorized",
+			Detail:  err.Error(),
+		}
+		return apiResponse(http.StatusUnauthorized, result)
+	}
+
+	if !valid {
+		result := errorResponse{
+			Message: "Unauthorized",
+			Detail:  "You are not authorized to create items for user " + newItem.Owner,
+		}
+		return apiResponse(http.StatusUnauthorized, result)
 	}
 
 	//assign an item id (uid)
