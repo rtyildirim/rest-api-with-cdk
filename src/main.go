@@ -181,7 +181,7 @@ func loginUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespon
 				Detail:  err.Error(),
 			})
 		}
-		if strings.EqualFold(user.UserName, record.UserName) && user.Password == record.Password {
+		if strings.EqualFold(user.UserName, record.UserName) && comparePasswords(record.Password, user.Password) {
 			authenticated = true
 		}
 	}
