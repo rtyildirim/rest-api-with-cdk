@@ -5,13 +5,18 @@ import s3deploy = require('@aws-cdk/aws-s3-deployment');
 import { LambdaIntegration, MethodLoggingLevel, RestApi } from "@aws-cdk/aws-apigateway"
 import { PolicyStatement } from '@aws-cdk/aws-iam';
 import * as dynamodb from '@aws-cdk/aws-dynamodb';
-
-import path = require("path")
+import * as kms from '@aws-cdk/aws-kms';
 
 
 export class LambdaApigwRestStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const tokenKey = new kms.Key(this, 'MyKey', {
+      alias: 'rest-api-token-key',
+      keySpec: kms.KeySpec.RSA_4096,
+      keyUsage: kms.KeyUsage.SIGN_VERIFY
+    });
 
     const userTable = new dynamodb.Table(this, "UserTable", {
       tableName: "userTable",
@@ -65,6 +70,9 @@ export class LambdaApigwRestStack extends cdk.Stack {
       code: lambda.Code.fromAsset("./src/lambda-api-function.zip"),
       memorySize: 128,
       timeout: cdk.Duration.seconds(10),
+      environment: {
+        'KMS_TOKEN_KEY_ID': tokenKey.keyId,
+      }
     });
 
     // grant the lambda role read/write permissions to our table
@@ -106,6 +114,11 @@ export class LambdaApigwRestStack extends cdk.Stack {
       apiKeyRequired: false,
     })
 
+    const login = restApi.root.addResource('login', {});
+    const postLoginMethod = login.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
+      apiKeyRequired: false,
+    })
+
 
     //create usage plan
     const plan = restApi.addUsagePlan('UsagePlan', {
@@ -122,8 +135,6 @@ export class LambdaApigwRestStack extends cdk.Stack {
     const key = restApi.addApiKey('ApiKey');
     plan.addApiKey(key);
 
-
-
     //allow lambda function to create log groups and write logs on CloudWatch
     const logPermission = new PolicyStatement();
     logPermission.addResources('arn:aws:logs:*:*:*');
@@ -131,6 +142,14 @@ export class LambdaApigwRestStack extends cdk.Stack {
     logPermission.addActions('logs:CreateLogStream');
     logPermission.addActions('logs:PutLogEvents');
     lambdaFunction.addToRolePolicy(logPermission);
+
+    const tokenKeyPermission = new PolicyStatement();
+    tokenKeyPermission.addResources(tokenKey.keyArn)
+    tokenKeyPermission.addActions('kms:Decrypt');
+    tokenKeyPermission.addActions('kms:Encrypt');
+    tokenKeyPermission.addActions('kms:Sign');
+    tokenKeyPermission.addActions('kms:Verify');
+    lambdaFunction.addToRolePolicy(tokenKeyPermission);
 
     new cdk.CfnOutput(this, 'apiUrl', { value: restApi.url });
     new cdk.CfnOutput(this, 'userTable', { value: userTable.tableName });

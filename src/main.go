@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -12,11 +17,17 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/golang-jwt/jwt"
+	"github.com/matelang/jwt-go-aws-kms/v2/jwtkms"
 
 	"encoding/json"
 )
 
-type user struct {
+type userType struct {
 	UserName  string `json:"userName"`
 	Email     string `json:"email"`
 	FirstName string `json:"firstName"`
@@ -57,7 +68,23 @@ type errorResponse struct {
 	Detail  string `json:"Detail"`
 }
 
+type loginResponse struct {
+	Token   string `json:"token"`
+	Expires string `json:"expires"`
+}
+
+var tokenKeyId string
+var awsRegion string
+
 func main() {
+	tokenKeyId = os.Getenv("KMS_TOKEN_KEY_ID")
+	if tokenKeyId == "" {
+		log.Fatal("Missing KMS Key ID")
+	}
+	awsRegion = os.Getenv("AWS_REGION")
+	if tokenKeyId == "" {
+		log.Fatal("Missing AWS Region")
+	}
 	lambda.Start(handler)
 }
 
@@ -67,6 +94,8 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 		return userHandler(req)
 	case "/items":
 		return itemHandler(req)
+	case "/login":
+		return loginHandler(req)
 	default:
 		return unhandledPath(req)
 	}
@@ -94,6 +123,87 @@ func itemHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResp
 	}
 }
 
+func loginHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	switch req.HTTPMethod {
+	case "POST":
+		return loginUser(req)
+	default:
+		return unhandledMethod(req)
+	}
+}
+
+func loginUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+
+	user := userType{}
+
+	err := json.Unmarshal([]byte(req.Body), &user)
+	if err != nil || user.UserName == "" || user.Password == "" {
+		result := errorResponse{
+			Message: "Invalid request",
+			Detail:  "Request body must include username and password",
+		}
+		return apiResponse(http.StatusBadRequest, result)
+	}
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	// Create DynamoDB client
+	svc := dynamodb.New(sess)
+
+	queryInput := &dynamodb.QueryInput{
+		TableName: aws.String("userTable"),
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":userName": {
+				S: aws.String(strings.ToLower(user.UserName)),
+			},
+		},
+		KeyConditionExpression: aws.String("userName = :userName"),
+	}
+
+	res, err := svc.Query(queryInput)
+	if err != nil {
+		return apiResponse(http.StatusInternalServerError, errorResponse{
+			Message: "Unable to get users",
+			Detail:  err.Error(),
+		})
+	}
+
+	record := userType{}
+
+	authenticated := false
+	for _, j := range res.Items {
+		err = dynamodbattribute.UnmarshalMap(j, &record)
+		if err != nil {
+			return apiResponse(http.StatusInternalServerError, errorResponse{
+				Message: "Unable to parse users",
+				Detail:  err.Error(),
+			})
+		}
+		if strings.EqualFold(user.UserName, record.UserName) && user.Password == record.Password {
+			authenticated = true
+		}
+	}
+
+	if !authenticated {
+		return apiResponse(http.StatusForbidden, errorResponse{
+			Message: "Forbidden",
+		})
+	}
+
+	loginResponse, err := createJwt(strings.ToLower(user.UserName))
+
+	if err != nil {
+		return apiResponse(http.StatusForbidden, errorResponse{
+			Message: "Forbidden",
+			Detail:  err.Error(),
+		})
+	}
+
+	return apiResponse(http.StatusOK, loginResponse)
+}
+
 func getUsers(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
@@ -117,9 +227,9 @@ func getUsers(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespons
 		})
 	}
 
-	out := []user{}
+	out := []userType{}
 
-	var record user
+	var record userType
 
 	for _, j := range res.Items {
 		err = dynamodbattribute.UnmarshalMap(j, &record)
@@ -133,7 +243,7 @@ func getUsers(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespons
 }
 
 func createUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	var newUser user
+	var newUser userType
 
 	err := json.Unmarshal([]byte(req.Body), &newUser)
 	if err != nil || newUser.Email == "" || newUser.UserName == "" || newUser.Password == "" {
@@ -147,7 +257,18 @@ func createUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 	//TODO: validate email address, username, make sure they are not already in the db
 	//TODO: Validate password for requirements
 
-	//TODO: save user to db
+	hashedSaltedPwd, err := hashAndSalt(newUser.Password)
+
+	if err != nil {
+		result := errorResponse{
+			Message: "Invalid password",
+			Detail:  "Request body is invalid. Please see the documentation.",
+		}
+		return apiResponse(http.StatusBadRequest, result)
+	}
+
+	newUser.Password = hashedSaltedPwd
+
 	err = storeUser(newUser)
 	if err != nil {
 		result := errorResponse{
@@ -158,11 +279,12 @@ func createUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 	}
 
 	newUser.Password = "**********"
+	newUser.UserName = strings.ToLower(newUser.UserName)
 
 	return apiResponse(http.StatusOK, newUser)
 }
 
-func storeUser(newUser user) error {
+func storeUser(newUser userType) error {
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
 	}))
@@ -304,4 +426,75 @@ func apiResponse(status int, body interface{}) (*events.APIGatewayProxyResponse,
 	stringBody, _ := json.Marshal(body)
 	resp.Body = string(stringBody)
 	return &resp, nil
+}
+
+func hashAndSalt(pwd string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(pwd), bcrypt.MinCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func comparePasswords(hashedPwd string, plainPwd string) bool {
+	byteHash := []byte(hashedPwd)
+	err := bcrypt.CompareHashAndPassword(byteHash, []byte(plainPwd))
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return true
+}
+
+func createJwt(userName string) (loginResponse, error) {
+
+	res := loginResponse{}
+	awsCfg, err := config.LoadDefaultConfig(context.Background(),
+		config.WithRegion(awsRegion))
+	if err != nil {
+		return res, err
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(1 * time.Hour)
+	jwtToken := jwt.NewWithClaims(jwtkms.SigningMethodRS512, &jwt.StandardClaims{
+		Audience:  "my-rest-api.example.com",
+		ExpiresAt: expiresAt.Unix(),
+		Id:        "1234-5678",
+		IssuedAt:  now.Unix(),
+		Issuer:    "my-rest-api-auth.example.com",
+		NotBefore: now.Unix(),
+		Subject:   userName,
+	})
+
+	kmsConfig := jwtkms.NewKMSConfig(kms.NewFromConfig(awsCfg), tokenKeyId, false)
+
+	token, err := jwtToken.SignedString(kmsConfig.WithContext(context.Background()))
+	if err != nil {
+		return res, err
+	}
+	res.Token = token
+	res.Expires = expiresAt.Format(time.RFC3339)
+	return res, nil
+}
+
+func validateToken(tokenStr string, userName string) (bool, error) {
+	claims := jwt.StandardClaims{}
+
+	awsCfg, err := config.LoadDefaultConfig(context.Background(),
+		config.WithRegion(awsRegion))
+	if err != nil {
+		return false, err
+	}
+
+	kmsConfig := jwtkms.NewKMSConfig(kms.NewFromConfig(awsCfg), tokenKeyId, false)
+
+	_, err = jwt.ParseWithClaims(tokenStr, &claims, func(token *jwt.Token) (interface{}, error) {
+		return kmsConfig, nil
+	})
+	if err != nil {
+		return false, err
+	}
+
+	return strings.EqualFold(claims.Subject, userName), nil
 }
