@@ -119,6 +119,14 @@ export class LambdaApigwRestStack extends cdk.Stack {
       apiKeyRequired: false,
     })
 
+    const review = restApi.root.addResource('reviews', {});
+    const postReview = review.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
+      apiKeyRequired: false,
+    })
+    const getReviews = review.addMethod("GET", new LambdaIntegration(lambdaFunction, {}), {
+      apiKeyRequired: true,
+    })
+
 
     //create usage plan
     const plan = restApi.addUsagePlan('UsagePlan', {

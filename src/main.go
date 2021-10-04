@@ -50,11 +50,11 @@ type itemDdb struct {
 }
 
 type item struct {
-	Item    itemDdb  `json:"item"`
-	Reviews []review `json:"reviews"`
+	Item    itemDdb      `json:"item"`
+	Reviews []reviewType `json:"reviews"`
 }
 
-type review struct {
+type reviewType struct {
 	Id         string `json:"id"`
 	ItemId     string `json:"itemId"`
 	ReviewerId string `json:"reviewerId"`
@@ -96,6 +96,8 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 		return itemHandler(req)
 	case "/login":
 		return loginHandler(req)
+	case "/reviews":
+		return reviewHandler(req)
 	default:
 		return unhandledPath(req)
 	}
@@ -127,6 +129,17 @@ func loginHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRes
 	switch req.HTTPMethod {
 	case "POST":
 		return loginUser(req)
+	default:
+		return unhandledMethod(req)
+	}
+}
+
+func reviewHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	switch req.HTTPMethod {
+	case "GET":
+		return getReviews(req)
+	case "POST":
+		return createReview(req)
 	default:
 		return unhandledMethod(req)
 	}
@@ -424,7 +437,7 @@ func getItems(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespons
 		if err == nil {
 			item := item{
 				Item:    record,
-				Reviews: []review{},
+				Reviews: []reviewType{},
 			}
 			//TODO: add reviews
 			out = append(out, item)
@@ -432,6 +445,96 @@ func getItems(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespons
 	}
 
 	return apiResponse(http.StatusOK, out)
+}
+
+func getReviews(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	// Create DynamoDB client
+	svc := dynamodb.New(sess)
+
+	tableName := "reviewTable"
+
+	scanInput := &dynamodb.ScanInput{
+		TableName: aws.String(tableName),
+	}
+
+	res, err := svc.Scan(scanInput)
+	if err != nil {
+		return apiResponse(http.StatusInternalServerError, errorResponse{
+			Message: "Unable to get reviews",
+			Detail:  err.Error(),
+		})
+	}
+
+	out := []reviewType{}
+
+	var record reviewType
+
+	for _, j := range res.Items {
+		err = dynamodbattribute.UnmarshalMap(j, &record)
+		if err == nil {
+			out = append(out, record)
+		}
+	}
+
+	return apiResponse(http.StatusOK, out)
+}
+
+func createReview(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	var review reviewType
+
+	err := json.Unmarshal([]byte(req.Body), &review)
+	if err != nil || review.ItemId == "" || review.ReviewerId == "" || review.Review == "" {
+		result := errorResponse{
+			Message: "Invalid request",
+			Detail:  "Request body is invalid. Please see the documentation.",
+		}
+		return apiResponse(http.StatusBadRequest, result)
+	}
+
+	//TODO: validate if user exists, item exists
+
+	review.Id = uuid.NewString()
+	review.Time = time.Now().Format(time.RFC3339)
+
+	err = storeReview(review)
+	if err != nil {
+		result := errorResponse{
+			Message: "Unable to store new review",
+			Detail:  err.Error(),
+		}
+		return apiResponse(http.StatusInternalServerError, result)
+	}
+
+	return apiResponse(http.StatusOK, review)
+}
+
+func storeReview(review reviewType) error {
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	svc := dynamodb.New(sess)
+
+	nr, err := dynamodbattribute.MarshalMap(review)
+	if err != nil {
+		return err
+	}
+
+	tableName := "reviewTable"
+
+	input := &dynamodb.PutItemInput{
+		Item:      nr,
+		TableName: aws.String(tableName),
+	}
+
+	_, err = svc.PutItem(input)
+
+	return err
 }
 
 func unhandledMethod(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
