@@ -1,21 +1,27 @@
 import * as cdk from '@aws-cdk/core';
-import s3 = require('@aws-cdk/aws-s3');
 import * as lambda from '@aws-cdk/aws-lambda';
-import s3deploy = require('@aws-cdk/aws-s3-deployment');
 import { LambdaIntegration, MethodLoggingLevel, RestApi } from "@aws-cdk/aws-apigateway"
 import { PolicyStatement } from '@aws-cdk/aws-iam';
 import * as dynamodb from '@aws-cdk/aws-dynamodb';
 import * as kms from '@aws-cdk/aws-kms';
+import * as secretsmanager from '@aws-cdk/aws-secretsmanager';
+import * as cognito from '@aws-cdk/aws-cognito';
 
 
 export class LambdaApigwRestStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    const userPool = cognito.UserPool.fromUserPoolId(this, 'RestApiUserPool', 'us-west-2_btpuZn6Ej')
+
     const tokenKey = new kms.Key(this, 'MyKey', {
       alias: 'rest-api-token-key',
       keySpec: kms.KeySpec.RSA_4096,
       keyUsage: kms.KeyUsage.SIGN_VERIFY
+    });
+
+    const restApiSecret = new secretsmanager.Secret(this, 'RestApiSecret', {
+      secretName: "lambda-rest-api-secret",
     });
 
     const userTable = new dynamodb.Table(this, "UserTable", {
@@ -67,11 +73,12 @@ export class LambdaApigwRestStack extends cdk.Stack {
     const lambdaFunction = new lambda.Function(this, "LambdaApiFunction", {
       runtime: lambda.Runtime.GO_1_X,
       handler: "main",
-      code: lambda.Code.fromAsset("./src/lambda-api-function.zip"),
+      code: lambda.Code.fromAsset("./api-lambda/lambda-api-function.zip"),
       memorySize: 128,
       timeout: cdk.Duration.seconds(10),
       environment: {
         'KMS_TOKEN_KEY_ID': tokenKey.keyId,
+        'SECRET_NAME': restApiSecret.secretName,
       }
     });
 
@@ -159,6 +166,20 @@ export class LambdaApigwRestStack extends cdk.Stack {
     tokenKeyPermission.addActions('kms:Verify');
     tokenKeyPermission.addActions('kms:GetPublicKey');
     lambdaFunction.addToRolePolicy(tokenKeyPermission);
+
+    const secretPermission = new PolicyStatement();
+    secretPermission.addResources(restApiSecret.secretArn);
+    secretPermission.addActions('secretsmanager:GetSecret');
+    secretPermission.addActions('secretsmanager:GetSecretValue');
+    lambdaFunction.addToRolePolicy(secretPermission);
+
+    const userPoolPermission = new PolicyStatement();
+    userPoolPermission.addResources(userPool.userPoolArn);
+    userPoolPermission.addActions('cognito-identity:*');
+    userPoolPermission.addActions('cognito-idp:*');
+    userPoolPermission.addActions('cognito-sync:*');
+    lambdaFunction.addToRolePolicy(userPoolPermission);
+
 
     new cdk.CfnOutput(this, 'apiUrl', { value: restApi.url });
     new cdk.CfnOutput(this, 'userTable', { value: userTable.tableName });

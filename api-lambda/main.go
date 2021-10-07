@@ -1,8 +1,13 @@
 package main
 
 import (
-	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"lambda-rest-api/go/auth"
 	"log"
 	"net/http"
 	"os"
@@ -13,19 +18,22 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	cognito "github.com/aws/aws-sdk-go/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
+	"github.com/aws/aws-sdk-go/service/secretsmanager"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
-
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/kms"
-	"github.com/golang-jwt/jwt"
-	"github.com/matelang/jwt-go-aws-kms/v2/jwtkms"
-
-	"encoding/json"
+	//"github.com/golang-jwt/jwt"
+	//"github.com/matelang/jwt-go-aws-kms/v2/jwtkms"
 )
+
+type secretType struct {
+	UserPoolId   string `json:"userPoolId"`
+	ClientId     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+}
 
 type userType struct {
 	UserName  string `json:"userName"`
@@ -70,7 +78,7 @@ type errorResponse struct {
 
 type loginResponse struct {
 	Token   string `json:"token"`
-	Expires string `json:"expires"`
+	Expires int64  `json:"expires"`
 }
 
 var tokenKeyId string
@@ -82,7 +90,7 @@ func main() {
 		log.Fatal("Missing KMS Key ID")
 	}
 	awsRegion = os.Getenv("AWS_REGION")
-	if tokenKeyId == "" {
+	if awsRegion == "" {
 		log.Fatal("Missing AWS Region")
 	}
 	lambda.Start(handler)
@@ -147,9 +155,18 @@ func reviewHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRe
 
 func loginUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 
+	secret, err := getSecrets()
+	if err != nil {
+		result := errorResponse{
+			Message: "Internal server error while fetching secret",
+			Detail:  err.Error(),
+		}
+		return apiResponse(http.StatusInternalServerError, result)
+	}
+
 	user := userType{}
 
-	err := json.Unmarshal([]byte(req.Body), &user)
+	err = json.Unmarshal([]byte(req.Body), &user)
 	if err != nil || user.UserName == "" || user.Password == "" {
 		result := errorResponse{
 			Message: "Invalid request",
@@ -158,55 +175,27 @@ func loginUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespon
 		return apiResponse(http.StatusBadRequest, result)
 	}
 
-	sess := session.Must(session.NewSessionWithOptions(session.Options{
-		SharedConfigState: session.SharedConfigEnable,
-	}))
+	mySession := session.Must(session.NewSession())
 
-	// Create DynamoDB client
-	svc := dynamodb.New(sess)
+	// Create a CognitoIdentityProvider client with additional configuration
+	svc := cognito.New(mySession, aws.NewConfig().WithRegion(awsRegion))
 
-	queryInput := &dynamodb.QueryInput{
-		TableName: aws.String("userTable"),
-		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":userName": {
-				S: aws.String(strings.ToLower(user.UserName)),
-			},
+	mac := hmac.New(sha256.New, []byte(secret.ClientSecret))
+	mac.Write([]byte(user.UserName + secret.ClientId))
+	secretHash := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	adminInitiateAuthRequest := cognito.AdminInitiateAuthInput{
+		AuthFlow:   aws.String("ADMIN_NO_SRP_AUTH"),
+		ClientId:   aws.String(secret.ClientId),
+		UserPoolId: aws.String(secret.UserPoolId),
+		AuthParameters: map[string]*string{
+			"USERNAME":    aws.String(user.UserName),
+			"PASSWORD":    aws.String(user.Password),
+			"SECRET_HASH": aws.String(secretHash),
 		},
-		KeyConditionExpression: aws.String("userName = :userName"),
 	}
 
-	res, err := svc.Query(queryInput)
-	if err != nil {
-		return apiResponse(http.StatusInternalServerError, errorResponse{
-			Message: "Unable to get users",
-			Detail:  err.Error(),
-		})
-	}
-
-	record := userType{}
-
-	authenticated := false
-	for _, j := range res.Items {
-		err = dynamodbattribute.UnmarshalMap(j, &record)
-		if err != nil {
-			return apiResponse(http.StatusInternalServerError, errorResponse{
-				Message: "Unable to parse users",
-				Detail:  err.Error(),
-			})
-		}
-		if strings.EqualFold(user.UserName, record.UserName) && comparePasswords(record.Password, user.Password) {
-			authenticated = true
-		}
-	}
-
-	if !authenticated {
-		return apiResponse(http.StatusForbidden, errorResponse{
-			Message: "Forbidden",
-		})
-	}
-
-	loginResponse, err := createJwt(strings.ToLower(user.UserName))
-
+	out, err := svc.AdminInitiateAuth(&adminInitiateAuthRequest)
 	if err != nil {
 		return apiResponse(http.StatusForbidden, errorResponse{
 			Message: "Forbidden",
@@ -214,7 +203,14 @@ func loginUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespon
 		})
 	}
 
-	return apiResponse(http.StatusOK, loginResponse)
+	expires := *out.AuthenticationResult.ExpiresIn
+
+	resp := loginResponse{
+		Token:   *out.AuthenticationResult.AccessToken,
+		Expires: expires,
+	}
+
+	return apiResponse(http.StatusOK, resp)
 }
 
 func getUsers(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
@@ -345,7 +341,8 @@ func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 
 	token := strings.Replace(auth, "Bearer ", "", 1)
 
-	valid, err := validateToken(token, newItem.Owner)
+	//TODO: check user name match
+	valid, err := validateToken(&token, newItem.Owner)
 
 	if err != nil {
 		result := errorResponse{
@@ -569,65 +566,80 @@ func hashAndSalt(pwd string) (string, error) {
 	return string(hash), nil
 }
 
-func comparePasswords(hashedPwd string, plainPwd string) bool {
-	byteHash := []byte(hashedPwd)
-	err := bcrypt.CompareHashAndPassword(byteHash, []byte(plainPwd))
-	if err != nil {
-		log.Println(err)
-		return false
-	}
-	return true
-}
+func validateToken(jwt *string, userName string) (bool, error) {
 
-func createJwt(userName string) (loginResponse, error) {
-
-	res := loginResponse{}
-	awsCfg, err := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion(awsRegion))
+	//TODO: check username
+	secret, err := getSecrets()
 	if err != nil {
-		return res, err
+		return false, err
 	}
 
-	now := time.Now()
-	expiresAt := now.Add(1 * time.Hour)
-	jwtToken := jwt.NewWithClaims(jwtkms.SigningMethodRS512, &jwt.StandardClaims{
-		Audience:  "my-rest-api.example.com",
-		ExpiresAt: expiresAt.Unix(),
-		Id:        "1234-5678",
-		IssuedAt:  now.Unix(),
-		Issuer:    "my-rest-api-auth.example.com",
-		NotBefore: now.Unix(),
-		Subject:   userName,
+	auth := auth.NewAuth(&auth.Config{
+		CognitoRegion:     awsRegion,
+		CognitoUserPoolID: secret.UserPoolId,
 	})
 
-	kmsConfig := jwtkms.NewKMSConfig(kms.NewFromConfig(awsCfg), tokenKeyId, false)
+	err = auth.CacheJWK()
+	if err != nil {
+		return false, err
+	}
 
-	token, err := jwtToken.SignedString(kmsConfig.WithContext(context.Background()))
+	token, err := auth.ParseJWT(*jwt)
+
+	if err != nil {
+		return false, err
+	}
+
+	if !token.Valid {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func getSecrets() (secretType, error) {
+	res := secretType{}
+	secretName := os.Getenv("SECRET_NAME") //"lambda-rest-api-secret-HOrKhw"
+	if secretName == "" {
+		return res, errors.New("missing SECRET_NAME")
+	}
+
+	region := os.Getenv("AWS_REGION") //"us-west-2"
+	if region == "" {
+		return res, errors.New("missing AWS_REGION")
+	}
+
+	sess, err := session.NewSession()
 	if err != nil {
 		return res, err
 	}
-	res.Token = token
-	res.Expires = expiresAt.Format(time.RFC3339)
+	//Create a Secrets Manager client
+	svc := secretsmanager.New(sess, aws.NewConfig().WithRegion(region))
+	input := &secretsmanager.GetSecretValueInput{
+		SecretId:     aws.String(secretName),
+		VersionStage: aws.String("AWSCURRENT"), // VersionStage defaults to AWSCURRENT if unspecified
+	}
+
+	result, err := svc.GetSecretValue(input)
+	if err != nil {
+		fmt.Println(err.Error())
+		return res, err
+	}
+
+	var secretString string
+	if result.SecretString != nil {
+		secretString = *result.SecretString
+	} else {
+		decodedBinarySecretBytes := make([]byte, base64.StdEncoding.DecodedLen(len(result.SecretBinary)))
+		len, err := base64.StdEncoding.Decode(decodedBinarySecretBytes, result.SecretBinary)
+		if err != nil {
+			return res, err
+		}
+		secretString = string(decodedBinarySecretBytes[:len])
+	}
+
+	if err := json.Unmarshal([]byte(secretString), &res); err != nil {
+		return res, err
+	}
 	return res, nil
-}
-
-func validateToken(tokenStr string, userName string) (bool, error) {
-	claims := jwt.StandardClaims{}
-
-	awsCfg, err := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion(awsRegion))
-	if err != nil {
-		return false, err
-	}
-
-	kmsConfig := jwtkms.NewKMSConfig(kms.NewFromConfig(awsCfg), tokenKeyId, false)
-
-	_, err = jwt.ParseWithClaims(tokenStr, &claims, func(token *jwt.Token) (interface{}, error) {
-		return kmsConfig, nil
-	})
-	if err != nil {
-		return false, err
-	}
-
-	return strings.EqualFold(claims.Subject, userName), nil
 }
