@@ -23,9 +23,9 @@ type errorResponse struct {
 }
 
 type loginResponse struct {
-	Token     string `json:"token"`
-	TokenType string `json:"tokenType"`
-	// IdToken      string `json:"idToken"`
+	Token        string `json:"token"`
+	TokenType    string `json:"tokenType"`
+	IdToken      string `json:"idToken"`
 	RefreshToken string `json:"refreshToken"`
 	Expires      int64  `json:"expires"`
 }
@@ -150,9 +150,9 @@ func loginUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespon
 	expires := *out.ExpiresIn
 
 	resp := loginResponse{
-		Token:     *out.AccessToken,
-		TokenType: *out.TokenType,
-		// IdToken:      *out.IdToken,
+		Token:        *out.AccessToken,
+		TokenType:    *out.TokenType,
+		IdToken:      *out.IdToken,
 		RefreshToken: *out.RefreshToken,
 		Expires:      expires,
 	}
@@ -201,8 +201,8 @@ func refreshToken(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRes
 	resp := loginResponse{
 		Token:     *out.AuthenticationResult.AccessToken,
 		TokenType: *out.AuthenticationResult.TokenType,
-		//RefreshToken: *out.AuthenticationResult.RefreshToken,
-		Expires: *out.AuthenticationResult.ExpiresIn,
+		IdToken:   *out.AuthenticationResult.IdToken,
+		Expires:   *out.AuthenticationResult.ExpiresIn,
 	}
 
 	return apiResponse(http.StatusOK, resp)

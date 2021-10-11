@@ -1,6 +1,6 @@
 import * as cdk from '@aws-cdk/core';
 import * as lambda from '@aws-cdk/aws-lambda';
-import { LambdaIntegration, MethodLoggingLevel, RestApi } from "@aws-cdk/aws-apigateway"
+import { LambdaIntegration, MethodLoggingLevel, RestApi, CfnAuthorizer, AuthorizationType, Authorizer } from "@aws-cdk/aws-apigateway"
 import { PolicyStatement } from '@aws-cdk/aws-iam';
 import * as dynamodb from '@aws-cdk/aws-dynamodb';
 import * as kms from '@aws-cdk/aws-kms';
@@ -160,6 +160,7 @@ export class LambdaApigwRestStack extends cdk.Stack {
       }
     });
 
+
     const adminLambdaFunction = new lambda.Function(this, "AdminLambdaApiFunction", {
       runtime: lambda.Runtime.GO_1_X,
       handler: "main",
@@ -193,6 +194,14 @@ export class LambdaApigwRestStack extends cdk.Stack {
         dataTraceEnabled: true,
       },
     })
+
+    const auth = new CfnAuthorizer(this, 'APIGatewayAuthorizer', {
+      name: 'customer-authorizer',
+      identitySource: 'method.request.header.Authorization',
+      providerArns: [restApiUserPool.userPoolArn],
+      restApiId: restApi.restApiId,
+      type: AuthorizationType.COGNITO,
+    });
 
     //Create paths and methods
     const users = restApi.root.addResource('users', {});
@@ -228,10 +237,10 @@ export class LambdaApigwRestStack extends cdk.Stack {
     const ontology = ontologies.addResource('{ontology}', {});
     const getOntologyMethod = ontology.addMethod("GET", new LambdaIntegration(lambdaFunction, {}), {
       apiKeyRequired: false,
-    })
-    // const postUserMethod = users.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
-    //   apiKeyRequired: false,
-    // })
+      authorizationType: AuthorizationType.COGNITO,
+      authorizer: { authorizerId: auth.ref },
+     //authorizationScopes
+    });
 
 
     //create usage plan
