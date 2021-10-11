@@ -23,9 +23,9 @@ type errorResponse struct {
 }
 
 type loginResponse struct {
-	Token        string `json:"token"`
-	TokenType    string `json:"tokenType"`
-	IdToken      string `json:"idToken"`
+	Token     string `json:"token"`
+	TokenType string `json:"tokenType"`
+	// IdToken      string `json:"idToken"`
 	RefreshToken string `json:"refreshToken"`
 	Expires      int64  `json:"expires"`
 }
@@ -38,6 +38,11 @@ type userType struct {
 	UserName    string `json:"userName"`
 	Password    string `json:"password"`
 	NewPassword string `json:"newPassword"`
+}
+
+type refreshTokenInput struct {
+	RefreshToken string `json:"refreshToken"`
+	UserName     string `json:"userName"`
 }
 
 var userPoolId string
@@ -85,6 +90,8 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 		return loginHandler(req)
 	case "/change-password":
 		return changePasswordHandler(req)
+	case "/refresh-token":
+		return refreshTokenHandler(req)
 	default:
 		return unhandledPath(req)
 	}
@@ -94,6 +101,15 @@ func loginHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRes
 	switch req.HTTPMethod {
 	case "POST":
 		return loginUser(req)
+	default:
+		return unhandledMethod(req)
+	}
+}
+
+func refreshTokenHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	switch req.HTTPMethod {
+	case "POST":
+		return refreshToken(req)
 	default:
 		return unhandledMethod(req)
 	}
@@ -134,11 +150,59 @@ func loginUser(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespon
 	expires := *out.ExpiresIn
 
 	resp := loginResponse{
-		Token:        *out.AccessToken,
-		TokenType:    *out.TokenType,
-		IdToken:      *out.IdToken,
+		Token:     *out.AccessToken,
+		TokenType: *out.TokenType,
+		// IdToken:      *out.IdToken,
 		RefreshToken: *out.RefreshToken,
 		Expires:      expires,
+	}
+
+	return apiResponse(http.StatusOK, resp)
+}
+
+func refreshToken(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+
+	input := refreshTokenInput{}
+
+	err := json.Unmarshal([]byte(req.Body), &input)
+	if err != nil || input.RefreshToken == "" || input.UserName == "" {
+		result := errorResponse{
+			Message: "Invalid request",
+			Detail:  "Request body must include refreshToken",
+		}
+		return apiResponse(http.StatusBadRequest, result)
+	}
+
+	mac := hmac.New(sha256.New, []byte(clientSecret))
+	mac.Write([]byte(input.UserName + clientId))
+	secretHash := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	iaInput := cognito.AdminInitiateAuthInput{
+		AuthFlow:   aws.String("REFRESH_TOKEN_AUTH"),
+		ClientId:   aws.String(clientId),
+		UserPoolId: aws.String(userPoolId),
+		AuthParameters: map[string]*string{
+			"REFRESH_TOKEN": aws.String(input.RefreshToken),
+			"SECRET_HASH":   aws.String(secretHash),
+		},
+	}
+	mySession := session.Must(session.NewSession())
+	svc := cognito.New(mySession, aws.NewConfig().WithRegion(awsRegion))
+
+	out, err := svc.AdminInitiateAuth(&iaInput)
+
+	if err != nil {
+		return apiResponse(http.StatusForbidden, errorResponse{
+			Message: "Forbidden",
+			Detail:  err.Error(),
+		})
+	}
+
+	resp := loginResponse{
+		Token:     *out.AuthenticationResult.AccessToken,
+		TokenType: *out.AuthenticationResult.TokenType,
+		//RefreshToken: *out.AuthenticationResult.RefreshToken,
+		Expires: *out.AuthenticationResult.ExpiresIn,
 	}
 
 	return apiResponse(http.StatusOK, resp)

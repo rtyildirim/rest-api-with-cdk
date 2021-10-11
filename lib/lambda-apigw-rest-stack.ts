@@ -56,11 +56,24 @@ export class LambdaApigwRestStack extends cdk.Stack {
 
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
 
+
       // emailSettings: {
       //   from: 'noreply@tolga24.com',
       //   replyTo: 'support@tolga24.com',
       // },
     });
+
+    const dmePosGroup = new cognito.CfnUserPoolGroup(this, "DmePosAdminGroup", {
+      groupName: "dmeposAdmin",
+      description: "User group for dmepos ontology admins",
+      userPoolId: restApiUserPool.userPoolId,
+    })
+
+    const superAdminGroup = new cognito.CfnUserPoolGroup(this, "SuperAdminGroup", {
+      groupName: "admin",
+      description: "User group for service admins",
+      userPoolId: restApiUserPool.userPoolId,
+    })
 
 
     const appClient = restApiUserPool.addClient('customer-app-client', {
@@ -250,6 +263,11 @@ export class LambdaApigwRestStack extends cdk.Stack {
 
     const adminChangePassword = adminApi.root.addResource('change-password', {});
     const adminPostChangePasswordMethod = adminChangePassword.addMethod("POST", new LambdaIntegration(adminLambdaFunction, {}), {
+      apiKeyRequired: false,
+    })
+
+    const adminRefreshToken = adminApi.root.addResource('refresh-token', {});
+    const adminPostrefreshTokenMethod = adminRefreshToken.addMethod("POST", new LambdaIntegration(adminLambdaFunction, {}), {
       apiKeyRequired: false,
     })
 
