@@ -81,6 +81,10 @@ type loginResponse struct {
 	Expires int64  `json:"expires"`
 }
 
+type ontologyResponse struct {
+	Ontology string `json:"ontology"`
+}
+
 var tokenKeyId string
 var awsRegion string
 
@@ -107,7 +111,20 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 	case "/reviews":
 		return reviewHandler(req)
 	default:
-		return unhandledPath(req)
+		if strings.Contains(req.Path, "/ontologies/") {
+			return ontologyHandler(req)
+		} else {
+			return unhandledPath(req)
+		}
+	}
+}
+
+func ontologyHandler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	switch req.HTTPMethod {
+	case "GET":
+		return getOntology(req)
+	default:
+		return unhandledMethod(req)
 	}
 }
 
@@ -442,6 +459,13 @@ func getItems(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespons
 	}
 
 	return apiResponse(http.StatusOK, out)
+}
+
+func getOntology(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	ontName := strings.Replace(req.Path, "/ontologies/", "", 1)
+	return apiResponse(http.StatusOK, ontologyResponse{
+		Ontology: ontName,
+	})
 }
 
 func getReviews(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {

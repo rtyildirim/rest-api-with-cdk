@@ -224,6 +224,15 @@ export class LambdaApigwRestStack extends cdk.Stack {
       apiKeyRequired: true,
     })
 
+    const ontologies = restApi.root.addResource('ontologies', {});
+    const ontology = ontologies.addResource('{ontology}', {});
+    const getOntologyMethod = ontology.addMethod("GET", new LambdaIntegration(lambdaFunction, {}), {
+      apiKeyRequired: false,
+    })
+    // const postUserMethod = users.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
+    //   apiKeyRequired: false,
+    // })
+
 
     //create usage plan
     const plan = restApi.addUsagePlan('UsagePlan', {
