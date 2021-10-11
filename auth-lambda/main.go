@@ -43,11 +43,12 @@ func init() {
 
 func handler(request events.APIGatewayCustomAuthorizerRequestTypeRequest) (events.APIGatewayCustomAuthorizerResponse, error) {
 
+	//TODO: get userGroup from token and resource from path
 	usergroup := request.Headers["usergroup"]
 	resource := request.Headers["resource"]
 
-	fmt.Println("usergroup is = ", usergroup)
-	fmt.Println("resource is = ", resource)
+	log.Println("usergroup is = ", usergroup)
+	log.Println("resource is = ", resource)
 
 	// Run evaluation.
 	start := time.Now()
@@ -73,6 +74,8 @@ func handler(request events.APIGatewayCustomAuthorizerRequestTypeRequest) (event
 
 	if err != nil {
 		// Handle error.
+		log.Println("Error while rego eval")
+		return events.APIGatewayCustomAuthorizerResponse{}, errors.New("Unauthorized")
 	}
 
 	fmt.Println("Result of query evaluation is = ", rs[0].Expressions[0].Value)

@@ -1,16 +1,11 @@
 {
     "GroupPermissions": {
-        "record1": [
-            "ViewerGroup",
-            "AdminGroup",
-            "Guest"
+        "dmepos": [
+            "admin",
+            "dmeposAdmin"
         ],
-        "record2": [
-            "ViewerGroup",
-            "AdminGroup"
-        ],
-        "record_secret": [
-            "AdminGroup"
+        "service": [
+            "admin"
         ]
     }
 }
