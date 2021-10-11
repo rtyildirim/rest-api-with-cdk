@@ -210,6 +210,8 @@ export class LambdaApigwRestStack extends cdk.Stack {
     })
     const postUserMethod = users.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
       apiKeyRequired: false,
+      authorizationType: AuthorizationType.COGNITO,
+      authorizer: { authorizerId: auth.ref },
     })
 
     const items = restApi.root.addResource('items', {});
@@ -218,6 +220,8 @@ export class LambdaApigwRestStack extends cdk.Stack {
     })
     const postItemsMethod = items.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
       apiKeyRequired: false,
+      authorizationType: AuthorizationType.COGNITO,
+      authorizer: { authorizerId: auth.ref },
     })
 
     const login = restApi.root.addResource('login', {});
@@ -228,6 +232,8 @@ export class LambdaApigwRestStack extends cdk.Stack {
     const review = restApi.root.addResource('reviews', {});
     const postReview = review.addMethod("POST", new LambdaIntegration(lambdaFunction, {}), {
       apiKeyRequired: false,
+      authorizationType: AuthorizationType.COGNITO,
+      authorizer: { authorizerId: auth.ref },
     })
     const getReviews = review.addMethod("GET", new LambdaIntegration(lambdaFunction, {}), {
       apiKeyRequired: true,

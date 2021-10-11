@@ -343,16 +343,6 @@ func storeUser(newUser userType) error {
 func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	var newItem itemDdb
 
-	auth, ok := req.Headers["Authorization"]
-
-	if !ok || auth == "" {
-		result := errorResponse{
-			Message: "Unauthorized",
-			Detail:  "No auth token in request",
-		}
-		return apiResponse(http.StatusUnauthorized, result)
-	}
-
 	err := json.Unmarshal([]byte(req.Body), &newItem)
 	if err != nil || newItem.Name == "" || newItem.Description == "" || newItem.Owner == "" {
 		result := errorResponse{
