@@ -12,7 +12,70 @@ export class LambdaApigwRestStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const userPool = cognito.UserPool.fromUserPoolId(this, 'RestApiUserPool', 'us-west-2_btpuZn6Ej')
+    //const existingUserPool = cognito.UserPool.fromUserPoolId(this, 'RestApiUserPool', 'us-west-2_btpuZn6Ej')
+
+    const restApiUserPool = new cognito.UserPool(this, 'ApiUserPool', {
+      userPoolName: 'rest-api-userpool',
+      selfSignUpEnabled: false, //TODO: this can be made tru to enable self signup
+      userInvitation: {
+        emailSubject: 'Invite to join our rest api!',
+        emailBody: 'Hello {username}, you have been invited to join our rest-api! Your temporary password is {####}',
+        smsMessage: 'Hello {username}, you have been invited to join our rest-api! Your temporary password is {####}'
+      },
+
+      signInAliases: {
+        username: true,
+        email: true
+      },
+
+      standardAttributes: {
+        fullname: {
+          required: true,
+          mutable: false,
+        },
+        address: {
+          required: false,
+          mutable: true,
+        },
+      },
+
+      // mfa: cognito.Mfa.REQUIRED,
+      // mfaSecondFactor: {
+      //   sms: true,
+      //   otp: true,
+      // },
+
+      passwordPolicy: {
+        minLength: 12,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+        tempPasswordValidity: cdk.Duration.days(3),
+      },
+
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+
+      // emailSettings: {
+      //   from: 'noreply@tolga24.com',
+      //   replyTo: 'support@tolga24.com',
+      // },
+    });
+
+
+    const appClient = restApiUserPool.addClient('customer-app-client', {
+      authFlows: {
+        userPassword: true,
+        userSrp: true,
+        adminUserPassword: true,
+      },
+      accessTokenValidity: cdk.Duration.minutes(60),
+      idTokenValidity: cdk.Duration.minutes(60),
+      refreshTokenValidity: cdk.Duration.days(30),
+      enableTokenRevocation: true,
+      generateSecret: true,
+
+    });
 
     const tokenKey = new kms.Key(this, 'MyKey', {
       alias: 'rest-api-token-key',
@@ -42,8 +105,8 @@ export class LambdaApigwRestStack extends cdk.Stack {
 
     itemTable.addGlobalSecondaryIndex({
       indexName: 'ownerIndex',
-      partitionKey: {name: 'owner', type: dynamodb.AttributeType.STRING},
-      sortKey: {name: 'id', type: dynamodb.AttributeType.STRING},
+      partitionKey: { name: 'owner', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
@@ -57,15 +120,15 @@ export class LambdaApigwRestStack extends cdk.Stack {
 
     reviewTable.addGlobalSecondaryIndex({
       indexName: 'reviewerIdIndex',
-      partitionKey: {name: 'reviewerId', type: dynamodb.AttributeType.STRING},
-      sortKey: {name: 'itemId', type: dynamodb.AttributeType.STRING},
+      partitionKey: { name: 'reviewerId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'itemId', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
     reviewTable.addGlobalSecondaryIndex({
       indexName: 'itemIdIndex',
-      partitionKey: {name: 'itemId', type: dynamodb.AttributeType.STRING},
-      sortKey: {name: 'reviewerId', type: dynamodb.AttributeType.STRING},
+      partitionKey: { name: 'itemId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'reviewerId', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
@@ -79,6 +142,20 @@ export class LambdaApigwRestStack extends cdk.Stack {
       environment: {
         'KMS_TOKEN_KEY_ID': tokenKey.keyId,
         'SECRET_NAME': restApiSecret.secretName,
+        'USER_POOL_ID': restApiUserPool.userPoolId,
+        'CLIENT_ID': appClient.userPoolClientId,
+      }
+    });
+
+    const adminLambdaFunction = new lambda.Function(this, "AdminLambdaApiFunction", {
+      runtime: lambda.Runtime.GO_1_X,
+      handler: "main",
+      code: lambda.Code.fromAsset("./admin-lambda/lambda-admin-api-function.zip"),
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(10),
+      environment: {
+        'USER_POOL_ID': restApiUserPool.userPoolId,
+        'CLIENT_ID': appClient.userPoolClientId,
       }
     });
 
@@ -150,6 +227,32 @@ export class LambdaApigwRestStack extends cdk.Stack {
     const key = restApi.addApiKey('ApiKey');
     plan.addApiKey(key);
 
+    const adminApi = new RestApi(this, "LambdaApiFunctionAdminApi", {
+      description: "Admin API Demo Using CDK",
+      defaultCorsPreflightOptions: {
+        allowHeaders: ["*"],
+        allowMethods: ['OPTIONS', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+        allowCredentials: true,
+        allowOrigins: ["*"],
+      },
+      deployOptions: {
+        stageName: "beta",
+        metricsEnabled: true,
+        loggingLevel: MethodLoggingLevel.INFO,
+        dataTraceEnabled: true,
+      },
+    })
+
+    const adminLogin = adminApi.root.addResource('login', {});
+    const adminPostLoginMethod = adminLogin.addMethod("POST", new LambdaIntegration(adminLambdaFunction, {}), {
+      apiKeyRequired: false,
+    })
+
+    const adminChangePassword = adminApi.root.addResource('change-password', {});
+    const adminPostChangePasswordMethod = adminChangePassword.addMethod("POST", new LambdaIntegration(adminLambdaFunction, {}), {
+      apiKeyRequired: false,
+    })
+
     //allow lambda function to create log groups and write logs on CloudWatch
     const logPermission = new PolicyStatement();
     logPermission.addResources('arn:aws:logs:*:*:*');
@@ -174,17 +277,19 @@ export class LambdaApigwRestStack extends cdk.Stack {
     lambdaFunction.addToRolePolicy(secretPermission);
 
     const userPoolPermission = new PolicyStatement();
-    userPoolPermission.addResources(userPool.userPoolArn);
+    userPoolPermission.addResources(restApiUserPool.userPoolArn);
     userPoolPermission.addActions('cognito-identity:*');
     userPoolPermission.addActions('cognito-idp:*');
     userPoolPermission.addActions('cognito-sync:*');
     lambdaFunction.addToRolePolicy(userPoolPermission);
 
+    adminLambdaFunction.addToRolePolicy(logPermission);
+    adminLambdaFunction.addToRolePolicy(userPoolPermission);
 
     new cdk.CfnOutput(this, 'apiUrl', { value: restApi.url });
+    new cdk.CfnOutput(this, 'adminApiUrl', { value: adminApi.url });
     new cdk.CfnOutput(this, 'userTable', { value: userTable.tableName });
     new cdk.CfnOutput(this, 'itemTable', { value: itemTable.tableName });
     new cdk.CfnOutput(this, 'reviewTable', { value: reviewTable.tableName });
-
   }
 }
