@@ -7,5 +7,6 @@ require (
 	github.com/aws/aws-sdk-go v1.40.54
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/google/uuid v1.3.0
+	github.com/lestrrat-go/jwx v1.0.4
 	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
 )

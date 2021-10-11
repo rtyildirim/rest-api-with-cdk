@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"lambda-rest-api/go/auth"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +21,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 	"github.com/aws/aws-sdk-go/service/secretsmanager"
+	"github.com/dgrijalva/jwt-go"
+	"github.com/lestrrat-go/jwx/jwk"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -87,6 +88,7 @@ type ontologyResponse struct {
 
 var tokenKeyId string
 var awsRegion string
+var userPoolId string
 
 func main() {
 	tokenKeyId = os.Getenv("KMS_TOKEN_KEY_ID")
@@ -96,6 +98,10 @@ func main() {
 	awsRegion = os.Getenv("AWS_REGION")
 	if awsRegion == "" {
 		log.Fatal("Missing AWS Region")
+	}
+	userPoolId = os.Getenv("USER_POOL_ID")
+	if userPoolId == "" {
+		log.Fatal("Missing USER_POOL_ID")
 	}
 	lambda.Start(handler)
 }
@@ -356,27 +362,6 @@ func createItem(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespo
 		return apiResponse(http.StatusBadRequest, result)
 	}
 
-	token := strings.Replace(auth, "Bearer ", "", 1)
-
-	//TODO: check user name match
-	valid, err := validateToken(&token, newItem.Owner)
-
-	if err != nil {
-		result := errorResponse{
-			Message: "Unauthorized",
-			Detail:  err.Error(),
-		}
-		return apiResponse(http.StatusUnauthorized, result)
-	}
-
-	if !valid {
-		result := errorResponse{
-			Message: "Unauthorized",
-			Detail:  "You are not authorized to create items for user " + newItem.Owner,
-		}
-		return apiResponse(http.StatusUnauthorized, result)
-	}
-
 	//assign an item id (uid)
 	newItem.Id = uuid.New().String()
 
@@ -463,6 +448,31 @@ func getItems(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyRespons
 
 func getOntology(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	ontName := strings.Replace(req.Path, "/ontologies/", "", 1)
+
+	cols := strings.Split(req.Headers["Authorization"], " ")
+
+	token := ""
+
+	if len(cols) > 0 {
+		token = cols[1]
+	}
+
+	authorized, err := authorize(token, ontName+"Admin")
+
+	if err != nil {
+		return apiResponse(http.StatusUnauthorized, errorResponse{
+			Message: "You cannot view ontology " + ontName,
+			Detail:  err.Error(),
+		})
+	}
+
+	if !authorized {
+		return apiResponse(http.StatusUnauthorized, errorResponse{
+			Message: "You are not a member of " + ontName + "Admin group",
+			Detail:  err.Error(),
+		})
+	}
+
 	return apiResponse(http.StatusOK, ontologyResponse{
 		Ontology: ontName,
 	})
@@ -590,35 +600,41 @@ func hashAndSalt(pwd string) (string, error) {
 	return string(hash), nil
 }
 
-func validateToken(jwt *string, userName string) (bool, error) {
+func authorize(token string, requiredGroup string) (bool, error) {
 
-	//TODO: check username
-	secret, err := getSecrets()
+	out, err := jwt.Parse(token, verifyToken)
 	if err != nil {
 		return false, err
 	}
 
-	auth := auth.NewAuth(&auth.Config{
-		CognitoRegion:     awsRegion,
-		CognitoUserPoolID: secret.UserPoolId,
-	})
-
-	err = auth.CacheJWK()
-	if err != nil {
-		return false, err
+	//TODO: more validation of token
+	if !out.Valid {
+		return false, errors.New("token not valid")
 	}
 
-	token, err := auth.ParseJWT(*jwt)
+	groups := getGroups(out.Claims)
 
-	if err != nil {
-		return false, err
+	groupContainsRequiredName := false
+
+	for _, grp := range groups {
+		if grp == requiredGroup {
+			groupContainsRequiredName = true
+		}
 	}
-
-	if !token.Valid {
-		return false, nil
+	if !groupContainsRequiredName {
+		return false, fmt.Errorf("user not a member of %s group", requiredGroup)
 	}
-
 	return true, nil
+}
+
+func getGroups(claims jwt.Claims) []string {
+	if claim, ok := claims.(jwt.MapClaims); ok {
+		grps := fmt.Sprintf("%v", claim["cognito:groups"])
+		grps = strings.Replace(grps, "[", "", -1)
+		grps = strings.Replace(grps, "]", "", -1)
+		return strings.Split(grps, " ")
+	}
+	return []string{}
 }
 
 func getSecrets() (secretType, error) {
@@ -666,4 +682,30 @@ func getSecrets() (secretType, error) {
 		return res, err
 	}
 	return res, nil
+}
+
+func verifyToken(token *jwt.Token) (interface{}, error) {
+	// make sure to replace this with your actual URL
+	// https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-tokens-verifying-a-jwt.html#amazon-cognito-user-pools-using-tokens-step-2
+	jwksURL := fmt.Sprintf("https://cognito-idp.%s.amazonaws.com/%s/.well-known/jwks.json", awsRegion, userPoolId)
+	keySet, err := jwk.Fetch(jwksURL)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+	}
+	kid, ok := token.Header["kid"].(string)
+	if !ok {
+		return nil, errors.New("kid header not found")
+	}
+	keys := keySet.LookupKeyID(kid)
+
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("key %v not found", kid)
+	}
+	var raw interface{}
+	return raw, keys[0].Raw(&raw)
 }
